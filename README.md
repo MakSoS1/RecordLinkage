@@ -19,8 +19,8 @@ cd data-processing-project
 ## Структура данных
 Ожидается, что данные в ClickHouse будут иметь следующие столбцы в таблицах:
 
-table_dataset1: full_name, email, address, birthdate, phone
-table_dataset2: first_name, middle_name, last_name, birthdate, phone, address
+table_dataset1: full_name, email, address, birthdate, phone \n
+table_dataset2: first_name, middle_name, last_name, birthdate, phone, address \n
 table_dataset3: name, email, birthdate, sex
 ## Описание полей
 full_name_norm: нормализованное полное имя.
