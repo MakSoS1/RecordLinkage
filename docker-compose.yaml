@@ -1,0 +1,21 @@
+# version: '3.5'
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8.4.13-alpine@sha256:88a45f9e328549b2579256c46ee38e5c0e25ae58303d9eb6d9c7ed8d6d2bbf3c
+    privileged: true
+    container_name: clickhouse
+    hostname: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./input_data:/csv_files
+      - ./docker-entrypoint-initdb.d/00_initial_datasets_tables.sh:/docker-entrypoint-initdb.d/00_initial_datasets_tables.sh
+    entrypoint: /bin/sh -c "chmod +x /docker-entrypoint-initdb.d/00_initial_datasets_tables.sh && /entrypoint.sh"
+
+  solution:
+    build: .
+    depends_on:
+      - clickhouse
+    restart: always
+#    ...
