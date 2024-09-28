@@ -12,7 +12,7 @@
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/your-username/data-processing-project.git
+git clone https://github.com/MakSoS1/RecordLinkage.git
 cd data-processing-project
 ```
 
