@@ -14,7 +14,7 @@
 ```bash
 git clone https://github.com/your-username/data-processing-project.git
 cd data-processing-project
-...
+```
 
 ## Структура данных
 Ожидается, что данные в ClickHouse будут иметь следующие столбцы в таблицах:
