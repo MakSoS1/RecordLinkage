@@ -23,10 +23,10 @@ table_dataset1: full_name, email, address, birthdate, phone \
 table_dataset2: first_name, middle_name, last_name, birthdate, phone, address \
 table_dataset3: name, email, birthdate, sex
 ## Описание полей
-full_name_norm: нормализованное полное имя.
-email_norm: нормализованный email.
-address_norm: нормализованный адрес.
-birthdate_norm: нормализованная дата рождения.
+full_name_norm: нормализованное полное имя.\
+email_norm: нормализованный email.\
+address_norm: нормализованный адрес.\
+birthdate_norm: нормализованная дата рождения.\
 phone_norm: нормализованный номер телефона.
 ## Заметки
 Если ClickHouse не готов к подключению, скрипт будет пытаться подключиться каждые 5 секунд.
