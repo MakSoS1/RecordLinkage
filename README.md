@@ -7,7 +7,11 @@
 1. **data_reader.py** — скрипт для чтения данных из ClickHouse, их предварительной очистки и сохранения в формате CSV.
 2. **data_proccessor.py** — скрипт для дальнейшей обработки очищенных данных, сопоставления записей и создания модели для нахождения совпадений.
 
-![scheme](https://imgur.com/a/VngCyIo)
+![scheme](https://i.imgur.com/7FnO8Ux.png)
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://user-images.githubusercontent.com/25423296/163456779-a8556205-d0a5-45e2-ac17-42d089e3c3f8.png">
+</picture>
 
 ## Установка и Запуск
 
