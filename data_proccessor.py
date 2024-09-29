@@ -5,8 +5,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
-from multiprocessing import Pool, cpu_count
-from functools import partial
 from tqdm import tqdm
 
 def process_chunk(chunk, df_other, indexer, compare_cl, label):
@@ -16,10 +14,6 @@ def process_chunk(chunk, df_other, indexer, compare_cl, label):
     features = compare_cl.compute(candidate_links, chunk, df_other)
     print(f"Обработка {label}: вычисление признаков завершено")
     return features
-
-def process_chunk_parallel(start, chunk_size, df_main, df_other, indexer, compare_cl, label):
-    chunk = df_main.iloc[start:start + chunk_size]
-    return process_chunk(chunk, df_other, indexer, compare_cl, f'{label} (блок {start})')
 
 def load_and_preprocess_data(file_paths):
     dfs = []
@@ -58,15 +52,12 @@ def create_indexer_and_comparator(columns):
     
     return indexer, compare_cl
 
-def parallel_processing(df_main, df_other, indexer, compare_cl, chunk_size, label):
-    num_cores = cpu_count()
-    partial_process = partial(process_chunk_parallel, chunk_size=chunk_size, df_main=df_main, df_other=df_other, 
-                              indexer=indexer, compare_cl=compare_cl, label=label)
-    
-    with Pool(processes=num_cores) as pool:
-        features_list = list(tqdm(pool.imap(partial_process, range(0, len(df_main), chunk_size)), 
-                                  total=len(range(0, len(df_main), chunk_size))))
-    
+def sequential_processing(df_main, df_other, indexer, compare_cl, chunk_size, label):
+    features_list = []
+    for start in tqdm(range(0, len(df_main), chunk_size), desc=f"Обработка {label}"):
+        chunk = df_main.iloc[start:start + chunk_size]
+        features = process_chunk(chunk, df_other, indexer, compare_cl, f'{label} (блок {start})')
+        features_list.append(features)
     return pd.concat(features_list)
 
 def train_model(features):
@@ -113,14 +104,14 @@ def main():
     
     # Сопоставление df_is1 и df_is2
     indexer_1_2, compare_cl_1_2 = create_indexer_and_comparator(['birthdate_norm', 'full_name_norm', 'phone_norm', 'address_norm'])
-    features_1_2 = parallel_processing(df_is1, df_is2, indexer_1_2, compare_cl_1_2, 50000, 'df_is1 и df_is2')
+    features_1_2 = sequential_processing(df_is1, df_is2, indexer_1_2, compare_cl_1_2, 10000, 'df_is1 и df_is2')
     
     classifier = train_model(features_1_2)
     results = predict_matches(classifier, features_1_2, df_is1, df_is2)
     
     # Сопоставление df_is1 и df_is3
     indexer_1_3, compare_cl_1_3 = create_indexer_and_comparator(['birthdate_norm', 'full_name_norm', 'email_norm'])
-    features_1_3 = parallel_processing(df_is1, df_is3, indexer_1_3, compare_cl_1_3, 50000, 'df_is1 и df_is3')
+    features_1_3 = sequential_processing(df_is1, df_is3, indexer_1_3, compare_cl_1_3, 10000, 'df_is1 и df_is3')
     
     results.extend(predict_matches(classifier, features_1_3, df_is1, df_is3))
     
