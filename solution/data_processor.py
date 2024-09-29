@@ -1,58 +1,48 @@
-import dask.dataframe as dd
 import pandas as pd
+import dask.dataframe as dd
 import recordlinkage
+from sqlalchemy import create_engine
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
 from tqdm import tqdm
 
+# Функция для записи данных в ClickHouse
+def save_to_clickhouse(df, table_name, engine):
+    """
+    Сохраняет DataFrame в таблицу ClickHouse.
+    
+    :param df: DataFrame для сохранения
+    :param table_name: Название таблицы в ClickHouse
+    :param engine: Объект подключения к базе данных ClickHouse
+    """
+    try:
+        df.to_sql(table_name, con=engine, if_exists='append', index=False, method='multi')
+        print(f"Данные успешно сохранены в таблицу ClickHouse: {table_name}")
+    except Exception as e:
+        print(f"Ошибка при сохранении данных в ClickHouse: {e}")
+
 # Функция для обработки одного блока данных
 def process_chunk(chunk, df_other, indexer, compare_cl, label):
-    """
-    Обрабатывает один блок данных, создавая пары кандидатов и вычисляя признаки.
-    
-    :param chunk: Часть основного DataFrame для обработки
-    :param df_other: Второй DataFrame для сопоставления
-    :param indexer: Объект индексатора recordlinkage
-    :param compare_cl: Объект сравнения recordlinkage
-    :param label: Метка для идентификации текущего блока
-    :return: DataFrame с вычисленными признаками
-    """
     print(f"Начата обработка блока: {label}")
-    # Создание пар кандидатов для сопоставления
     candidate_links = indexer.index(chunk, df_other)
     print(f"Обработка {label}: создано {len(candidate_links)} пар кандидатов")
-    # Вычисление признаков для пар кандидатов
     features = compare_cl.compute(candidate_links, chunk, df_other)
     print(f"Обработка {label}: вычисление признаков завершено")
     return features
 
 # Функция для загрузки и предобработки данных
 def load_and_preprocess_data(file_paths):
-    """
-    Загружает данные из CSV-файлов и выполняет базовую предобработку.
-    
-    :param file_paths: Список путей к CSV-файлам
-    :return: Список обработанных DataFrame
-    """
     dfs = []
     for file_path in file_paths:
-        # Загрузка данных с использованием Dask для эффективной работы с большими файлами
         df = dd.read_csv(file_path).compute()
-        # Сброс индекса для обеспечения последовательной нумерации
         df = df.reset_index(drop=True)
         dfs.append(df)
     return dfs
 
 # Функция для проверки наличия необходимых столбцов
 def check_required_columns(dfs, required_columns_list):
-    """
-    Проверяет наличие необходимых столбцов в каждом DataFrame.
-    
-    :param dfs: Список DataFrame для проверки
-    :param required_columns_list: Список списков необходимых столбцов для каждого DataFrame
-    """
     for df, required_columns, name in zip(dfs, required_columns_list, ['df_is1', 'df_is2', 'df_is3']):
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
@@ -62,12 +52,6 @@ def check_required_columns(dfs, required_columns_list):
 
 # Функция для объединения столбцов имен
 def combine_names(df):
-    """
-    Объединяет столбцы имени, если они существуют отдельно.
-    
-    :param df: DataFrame для обработки
-    :return: Обработанный DataFrame
-    """
     if 'full_name_norm' not in df.columns and all(col in df.columns for col in ['first_name_norm', 'middle_name_norm', 'last_name_norm']):
         print("Объединение имен в DataFrame")
         df['full_name_norm'] = df['first_name_norm'] + ' ' + df['middle_name_norm'] + ' ' + df['last_name_norm']
@@ -76,12 +60,6 @@ def combine_names(df):
 
 # Функция для создания индексатора и компаратора
 def create_indexer_and_comparator(columns):
-    """
-    Создает объекты индексатора и компаратора для recordlinkage.
-    
-    :param columns: Список столбцов для использования в индексации и сравнении
-    :return: Кортеж (индексатор, компаратор)
-    """
     indexer = recordlinkage.Index()
     for column in columns:
         indexer.sortedneighbourhood(column, window=3)
@@ -97,17 +75,6 @@ def create_indexer_and_comparator(columns):
 
 # Функция для последовательной обработки данных
 def sequential_processing(df_main, df_other, indexer, compare_cl, chunk_size, label):
-    """
-    Выполняет последовательную обработку данных блоками.
-    
-    :param df_main: Основной DataFrame
-    :param df_other: Второй DataFrame для сопоставления
-    :param indexer: Объект индексатора
-    :param compare_cl: Объект компаратора
-    :param chunk_size: Размер блока для обработки
-    :param label: Метка для идентификации процесса
-    :return: DataFrame с результатами обработки
-    """
     features_list = []
     for start in tqdm(range(0, len(df_main), chunk_size), desc=f"Обработка {label}"):
         chunk = df_main.iloc[start:start + chunk_size]
@@ -117,13 +84,6 @@ def sequential_processing(df_main, df_other, indexer, compare_cl, chunk_size, la
 
 # Функция для обучения модели
 def train_model(features):
-    """
-    Обучает модель случайного леса на основе предоставленных признаков.
-    
-    :param features: DataFrame с признаками
-    :return: Обученная модель
-    """
-    # ВНИМАНИЕ: Здесь используются случайные метки. В реальном сценарии нужно использовать настоящие метки
     features['match'] = np.random.randint(0, 2, size=features.shape[0])
     X = features.drop(columns='match')
     y = features['match']
@@ -139,15 +99,6 @@ def train_model(features):
 
 # Функция для предсказания совпадений
 def predict_matches(classifier, features, df1, df2):
-    """
-    Предсказывает совпадения на основе обученной модели.
-    
-    :param classifier: Обученная модель
-    :param features: DataFrame с признаками
-    :param df1: Первый DataFrame
-    :param df2: Второй DataFrame
-    :return: Список словарей с идентификаторами совпадающих записей
-    """
     X = features.drop(columns='match', errors='ignore')
     predictions = classifier.predict(X)
     matched_indices = features[predictions == 1].index
@@ -197,7 +148,13 @@ def main():
     # Создание итоговой таблицы результатов
     final_results = [[r['id_is1'], r['id_is2'], r['id_is3']] for r in results]
     final_df = pd.DataFrame(final_results, columns=['id_is1', 'id_is2', 'id_is3'])
-    final_df.to_csv('final_results.csv', index=False)
+    
+    # Устанавливаем соединение с ClickHouse
+    uri = 'clickhouse+native://default:@clickhouse:9000/default'
+    engine = create_engine(uri)
+
+    # Сохраняем результаты в ClickHouse
+    save_to_clickhouse(final_df, 'matched_results', engine)
     
     print("Процесс завершен успешно!")
 
