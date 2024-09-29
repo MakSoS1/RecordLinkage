@@ -1,4 +1,3 @@
-
 import dask.dataframe as dd
 import pandas as pd
 import recordlinkage
@@ -8,209 +7,129 @@ from sklearn.metrics import classification_report
 import numpy as np
 from multiprocessing import Pool, cpu_count
 from functools import partial
-from tqdm import tqdm  # Для визуализации прогресса
+from tqdm import tqdm
 
-def main():
-    # Шаг 1: Загрузка данных с помощью Dask
-    print("Шаг 1: Загрузка данных")
-    df_is1 = dd.read_csv('main1_clean_dask.csv')
-    df_is2 = dd.read_csv('main2_clean_dask.csv')
-    df_is3 = dd.read_csv('main3_clean_dask.csv')
+def process_chunk(chunk, df_other, indexer, compare_cl, label):
+    print(f"Начата обработка блока: {label}")
+    candidate_links = indexer.index(chunk, df_other)
+    print(f"Обработка {label}: создано {len(candidate_links)} пар кандидатов")
+    features = compare_cl.compute(candidate_links, chunk, df_other)
+    print(f"Обработка {label}: вычисление признаков завершено")
+    return features
 
-    # Шаг 2: Вычисление Dask DataFrame в Pandas DataFrame
-    print("Шаг 2: Преобразование Dask DataFrame в Pandas DataFrame")
-    df_is1 = df_is1.compute()
-    df_is2 = df_is2.compute()
-    df_is3 = df_is3.compute()
+def process_chunk_parallel(start, chunk_size, df_main, df_other, indexer, compare_cl, label):
+    chunk = df_main.iloc[start:start + chunk_size]
+    return process_chunk(chunk, df_other, indexer, compare_cl, f'{label} (блок {start})')
 
-    # Шаг 3: Сброс индексов для каждого DataFrame
-    print("Шаг 3: Сброс индексов и обработка дубликатов")
-    df_is1 = df_is1.reset_index(drop=True)
-    df_is2 = df_is2.reset_index(drop=True)
-    df_is3 = df_is3.reset_index(drop=True)
+def load_and_preprocess_data(file_paths):
+    dfs = []
+    for file_path in file_paths:
+        df = dd.read_csv(file_path).compute()
+        df = df.reset_index(drop=True)
+        dfs.append(df)
+    return dfs
 
-    # Проверка наличия нужных столбцов в DataFrame
-    required_columns_is1 = ['uid', 'full_name_norm', 'birthdate_norm', 'email_norm', 'phone_norm', 'address_norm']
-    required_columns_is2 = ['uid', 'full_name_norm', 'birthdate_norm', 'phone_norm', 'address_norm']
-    required_columns_is3 = ['uid', 'full_name_norm', 'birthdate_norm', 'email_norm']
-
-    print("Проверка столбцов в df_is1")
-    print(df_is1.columns)
-    print("Проверка столбцов в df_is2")
-    print(df_is2.columns)
-    print("Проверка столбцов в df_is3")
-    print(df_is3.columns)
-
-    # Проверка наличия всех нужных столбцов
-    for df, required_columns, name in zip([df_is1, df_is2, df_is3], 
-                                          [required_columns_is1, required_columns_is2, required_columns_is3],
-                                          ['df_is1', 'df_is2', 'df_is3']):
+def check_required_columns(dfs, required_columns_list):
+    for df, required_columns, name in zip(dfs, required_columns_list, ['df_is1', 'df_is2', 'df_is3']):
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             print(f"Предупреждение: В {name} отсутствуют столбцы: {missing_columns}")
         else:
             print(f"Все необходимые столбцы присутствуют в {name}")
 
-    # **Объединение имен в df_is2, если еще не объединено**
-    if 'full_name_norm' not in df_is2.columns and all(col in df_is2.columns for col in ['first_name_norm', 'middle_name_norm', 'last_name_norm']):
-        print("Объединение имен в df_is2")
-        df_is2['full_name_norm'] = df_is2['first_name_norm'] + ' ' + df_is2['middle_name_norm'] + ' ' + df_is2['last_name_norm']
-        df_is2.drop(['first_name_norm', 'middle_name_norm', 'last_name_norm'], axis=1, inplace=True)
+def combine_names(df):
+    if 'full_name_norm' not in df.columns and all(col in df.columns for col in ['first_name_norm', 'middle_name_norm', 'last_name_norm']):
+        print("Объединение имен в DataFrame")
+        df['full_name_norm'] = df['first_name_norm'] + ' ' + df['middle_name_norm'] + ' ' + df['last_name_norm']
+        df.drop(['first_name_norm', 'middle_name_norm', 'last_name_norm'], axis=1, inplace=True)
+    return df
 
-    # Инициализация списка для хранения результатов
-    results = []
+def create_indexer_and_comparator(columns):
+    indexer = recordlinkage.Index()
+    for column in columns:
+        indexer.sortedneighbourhood(column, window=3)
+    
+    compare_cl = recordlinkage.Compare()
+    for column in columns:
+        if column.endswith('_norm'):
+            compare_cl.string(column, column, method='jarowinkler', threshold=0.85, label=column.replace('_norm', ''))
+        else:
+            compare_cl.exact(column, column, label=column)
+    
+    return indexer, compare_cl
 
-    # **Сопоставление df_is1 и df_is2 с параллельной обработкой**
-    print("Начало параллельной обработки df_is1 и df_is2")
-    chunk_size = 50000  # Размер блока для обработки
+def parallel_processing(df_main, df_other, indexer, compare_cl, chunk_size, label):
     num_cores = cpu_count()
-
-    # Определение необходимых столбцов для сравнения df_is1 и df_is2
-    required_columns_1_2 = ['phone_norm', 'full_name_norm', 'address_norm', 'birthdate_norm']
-
-    # Создание индексатора и объекта сравнения для df_is1 и df_is2
-    indexer_1_2 = recordlinkage.Index()
-    indexer_1_2.sortedneighbourhood('birthdate_norm', window=3)
-    indexer_1_2.sortedneighbourhood('full_name_norm', window=3)
-
-    compare_cl_1_2 = recordlinkage.Compare()
-    compare_cl_1_2.exact('phone_norm', 'phone_norm', label='phone')
-    compare_cl_1_2.string('full_name_norm', 'full_name_norm', method='jarowinkler', threshold=0.85, label='full_name')
-    compare_cl_1_2.string('address_norm', 'address_norm', method='jarowinkler', threshold=0.8, label='address')
-
-    # Параллельная обработка для df_is1 и df_is2
-    # Помещаем df_is1 и df_is2 в глобальную область видимости для доступа из дочерних процессов
-    global df_main_global, df_other_global, indexer_global, compare_cl_global
-    df_main_global = df_is1
-    df_other_global = df_is2
-    indexer_global = indexer_1_2
-    compare_cl_global = compare_cl_1_2
-
-    def process_chunk_parallel(start):
-        chunk = df_main_global.iloc[start:start + chunk_size]
-        return process_chunk(chunk, df_other_global, indexer_global, compare_cl_global, f'df_is1 и df_is2 (блок {start})')
-
-    # Используем tqdm для отображения прогресса
+    partial_process = partial(process_chunk_parallel, chunk_size=chunk_size, df_main=df_main, df_other=df_other, 
+                              indexer=indexer, compare_cl=compare_cl, label=label)
+    
     with Pool(processes=num_cores) as pool:
-        features_list_1_2 = list(tqdm(pool.imap(process_chunk_parallel, range(0, len(df_is1), chunk_size)), total=len(range(0, len(df_is1), chunk_size))))
-        pool.close()
-        pool.join()
+        features_list = list(tqdm(pool.imap(partial_process, range(0, len(df_main), chunk_size)), 
+                                  total=len(range(0, len(df_main), chunk_size))))
+    
+    return pd.concat(features_list)
 
-    # Объединение результатов
-    print("Объединение результатов сопоставления df_is1 и df_is2")
-    features_1_2 = pd.concat(features_list_1_2)
-
-    # Присвоение случайных меток для демонстрации (замените на реальные метки для обучения)
-    features_1_2['match'] = np.random.randint(0, 2, size=features_1_2.shape[0])
-
-    # Подготовка данных для обучения и тестирования модели
-    print("Подготовка данных для обучения модели")
-    X = features_1_2.drop(columns='match')
-    y = features_1_2['match']
+def train_model(features):
+    features['match'] = np.random.randint(0, 2, size=features.shape[0])  # Замените на реальные метки
+    X = features.drop(columns='match')
+    y = features['match']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Обучение модели
-    print("Обучение модели на основе RandomForestClassifier")
+    
     classifier = RandomForestClassifier(n_estimators=100, random_state=42)
     classifier.fit(X_train, y_train)
-
-    # Прогнозирование и оценка качества модели
-    print("Прогнозирование и оценка модели")
+    
     y_pred = classifier.predict(X_test)
     print(classification_report(y_test, y_pred))
+    
+    return classifier
 
-    # Применение модели ко всем кандидатам для фильтрации совпадений
-    print("Фильтрация совпадений по результатам модели")
+def predict_matches(classifier, features, df1, df2):
+    X = features.drop(columns='match', errors='ignore')
     predictions = classifier.predict(X)
-    matched_indices = features_1_2[predictions == 1].index
-
-    # Добавление результатов в общий список
+    matched_indices = features[predictions == 1].index
+    
+    results = []
     for index in matched_indices:
-        id_is1 = df_is1.loc[index[0], 'uid']
-        id_is2 = df_is2.loc[index[1], 'uid']
-        results.append({'id_is1': [id_is1], 'id_is2': [id_is2], 'id_is3': []})
+        id1 = df1.loc[index[0], 'uid']
+        id2 = df2.loc[index[1], 'uid']
+        results.append({'id_is1': [id1], 'id_is2': [id2], 'id_is3': []})
+    
+    return results
 
-    # **Сопоставление df_is1 и df_is3 с параллельной обработкой**
-    print("Начало параллельной обработки df_is1 и df_is3")
-    chunk_size = 50000  # Размер блока для обработки
-
-    # Определение необходимых столбцов для сравнения df_is1 и df_is3
-    required_columns_1_3 = ['email_norm', 'full_name_norm', 'birthdate_norm']
-
-    # Создание индексатора и объекта сравнения для df_is1 и df_is3
-    indexer_1_3 = recordlinkage.Index()
-    indexer_1_3.sortedneighbourhood('birthdate_norm', window=3)
-    indexer_1_3.sortedneighbourhood('full_name_norm', window=3)
-
-    compare_cl_1_3 = recordlinkage.Compare()
-    compare_cl_1_3.exact('email_norm', 'email_norm', label='email')
-    compare_cl_1_3.string('full_name_norm', 'full_name_norm', method='levenshtein', threshold=0.85, label='full_name')
-
-    # Помещаем новые объекты в глобальную область видимости
-    df_other_global = df_is3
-    indexer_global = indexer_1_3
-    compare_cl_global = compare_cl_1_3
-
-    def process_chunk_parallel(start):
-        chunk = df_main_global.iloc[start:start + chunk_size]
-        return process_chunk(chunk, df_other_global, indexer_global, compare_cl_global, f'df_is1 и df_is3 (блок {start})')
-
-    # Параллельная обработка для df_is1 и df_is3
-    with Pool(processes=num_cores) as pool:
-        features_list_1_3 = list(tqdm(pool.imap(process_chunk_parallel, range(0, len(df_is1), chunk_size)), total=len(range(0, len(df_is1), chunk_size))))
-        pool.close()
-        pool.join()
-
-    # Объединение результатов
-    print("Объединение результатов сопоставления df_is1 и df_is3")
-    features_1_3 = pd.concat(features_list_1_3)
-
-    # Присвоение случайных меток для демонстрации (замените на реальные метки для обучения)
-    features_1_3['match'] = np.random.randint(0, 2, size=features_1_3.shape[0])
-
-    # Подготовка данных для прогнозирования
-    X = features_1_3.drop(columns='match')
-    y = features_1_3['match']
-
-    # Прогнозирование совпадений для df_is1 и df_is3
-    print("Прогнозирование совпадений для df_is1 и df_is3")
-    predictions_1_3 = classifier.predict(X)
-    matched_indices_1_3 = features_1_3[predictions_1_3 == 1].index
-
-    # Добавление результатов в общий список
-    for index in matched_indices_1_3:
-        id_is1 = df_is1.loc[index[0], 'uid']
-        id_is3 = df_is3.loc[index[1], 'uid']
-        results.append({'id_is1': [id_is1], 'id_is2': [], 'id_is3': [id_is3]})
-
+def main():
+    # Загрузка и предобработка данных
+    file_paths = ['main1_clean_dask.csv', 'main2_clean_dask.csv', 'main3_clean_dask.csv']
+    df_is1, df_is2, df_is3 = load_and_preprocess_data(file_paths)
+    
+    required_columns = [
+        ['uid', 'full_name_norm', 'birthdate_norm', 'email_norm', 'phone_norm', 'address_norm'],
+        ['uid', 'full_name_norm', 'birthdate_norm', 'phone_norm', 'address_norm'],
+        ['uid', 'full_name_norm', 'birthdate_norm', 'email_norm']
+    ]
+    
+    check_required_columns([df_is1, df_is2, df_is3], required_columns)
+    
+    df_is2 = combine_names(df_is2)
+    
+    # Сопоставление df_is1 и df_is2
+    indexer_1_2, compare_cl_1_2 = create_indexer_and_comparator(['birthdate_norm', 'full_name_norm', 'phone_norm', 'address_norm'])
+    features_1_2 = parallel_processing(df_is1, df_is2, indexer_1_2, compare_cl_1_2, 50000, 'df_is1 и df_is2')
+    
+    classifier = train_model(features_1_2)
+    results = predict_matches(classifier, features_1_2, df_is1, df_is2)
+    
+    # Сопоставление df_is1 и df_is3
+    indexer_1_3, compare_cl_1_3 = create_indexer_and_comparator(['birthdate_norm', 'full_name_norm', 'email_norm'])
+    features_1_3 = parallel_processing(df_is1, df_is3, indexer_1_3, compare_cl_1_3, 50000, 'df_is1 и df_is3')
+    
+    results.extend(predict_matches(classifier, features_1_3, df_is1, df_is3))
+    
     # Создание итоговой таблицы результатов
-    print("Создание итоговой таблицы результатов")
-    final_results = []
-    for result in results:
-        final_results.append([
-            result['id_is1'], 
-            result['id_is2'], 
-            result['id_is3']
-        ])
-
-    # Преобразование в DataFrame и сохранение в CSV
-    print("Сохранение финальных результатов в CSV файл")
+    final_results = [[r['id_is1'], r['id_is2'], r['id_is3']] for r in results]
     final_df = pd.DataFrame(final_results, columns=['id_is1', 'id_is2', 'id_is3'])
     final_df.to_csv('final_results.csv', index=False)
-
+    
     print("Процесс завершен успешно!")
-
-# Функция для обработки блока данных
-def process_chunk(chunk, df_other, indexer, compare_cl, label):
-    print(f"Начата обработка блока: {label}")
-    # Создание пар кандидатов
-    candidate_links = indexer.index(chunk, df_other)
-    print(f"Обработка {label}: создано {len(candidate_links)} пар кандидатов")
-
-    # Вычисление признаков
-    features = compare_cl.compute(candidate_links, chunk, df_other)
-    print(f"Обработка {label}: вычисление признаков завершено")
-    return features
 
 if __name__ == '__main__':
     main()
